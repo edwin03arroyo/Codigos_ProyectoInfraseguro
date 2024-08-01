@@ -1,0 +1,191 @@
+codigo esp32 #include <SPI.h>
+#include <MFRC522v2.h>
+#include <MFRC522DriverSPI.h>
+#include <MFRC522DriverPinSimple.h>
+#include <Wire.h>
+#include <LCD_I2C.h>
+
+// Configuración RFID
+const uint8_t ssPin = 5;    // GPIO 5 (SPI SS)
+const uint8_t rstPin = 4;   // GPIO 4 para evitar conflicto con I2C
+SPIClass customSPI(VSPI);
+SPISettings spiSettings(10000000, MSBFIRST, SPI_MODE0);
+MFRC522DriverPinSimple chipSelectPin(ssPin);
+MFRC522DriverPinSimple resetPin(rstPin);
+MFRC522DriverSPI driver(chipSelectPin, customSPI, spiSettings);
+MFRC522 mfrc522(driver);
+
+// Configuración LCD
+LCD_I2C lcd(0x27, 16, 2);
+
+// Pines para los relés de las puertas
+const int relePin1 = 2;  // Ajusta este número al pin que estés usando para la puerta 1
+const int relePin2 = 3;  // Ajusta este número al pin que estés usando para la puerta 2
+
+// Variables para almacenar el ID de la tarjeta y el estado de las puertas
+String tarjetaGuardada = "";
+bool puerta1Abierta = false;
+bool puerta2Abierta = false;
+
+void setup() {
+  Serial.begin(9600);
+  
+  // Inicialización RFID
+  customSPI.begin();
+  mfrc522.PCD_Init();
+  
+  // Inicialización LCD
+  lcd.begin();
+  lcd.backlight();
+  
+  // Configuración de los pines de los relés
+  pinMode(relePin1, OUTPUT);
+  pinMode(relePin2, OUTPUT);
+  digitalWrite(relePin1, LOW);  // Aseguramos que la puerta 1 esté cerrada al inicio
+  digitalWrite(relePin2, LOW);  // Aseguramos que la puerta 2 esté cerrada al inicio
+  
+  // Mensaje de bienvenida
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Bienvenido");
+  delay(2000);
+}
+
+void loop() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Pase su tarjeta");
+  
+  if (tarjetaGuardada == "") {
+    lcd.setCursor(0, 1);
+    lcd.print("para registrar");
+  } else {
+    lcd.setCursor(0, 1);
+    lcd.print("Seleccione puerta");
+  }
+  
+  // Espera hasta que se pase una tarjeta
+  while (!mfrc522.PICC_IsNewCardPresent() || !mfrc522.PICC_ReadCardSerial()) {
+    delay(50);
+  }
+  
+  // Lee el ID de la tarjeta
+  String idTarjeta = leerIdTarjeta();
+  
+  if (tarjetaGuardada == "") {
+    // Primera vez: guarda la tarjeta
+    tarjetaGuardada = idTarjeta;
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Guardando ID");
+    lcd.setCursor(0, 1);
+    lcd.print(idTarjeta);
+    Serial.println("Tarjeta guardada: " + idTarjeta);
+    delay(2000);
+  } else if (idTarjeta == tarjetaGuardada) {
+    // Tarjeta correcta: pregunta por la puerta 1
+    if (preguntarYAccionarPuerta("puerta 1", relePin1, puerta1Abierta)) {
+      puerta1Abierta = !puerta1Abierta;
+      if (puerta1Abierta) {
+        preguntarYCerrarPuerta("puerta 1", relePin1, puerta1Abierta);
+      }
+    } else if (preguntarYAccionarPuerta("puerta 2", relePin2, puerta2Abierta)) {
+      puerta2Abierta = !puerta2Abierta;
+      if (puerta2Abierta) {
+        preguntarYCerrarPuerta("puerta 2", relePin2, puerta2Abierta);
+      }
+    } else {
+      // Apagar sistema
+      lcd.clear();
+      lcd.setCursor(0, 0);
+      lcd.print("Apagando sistema");
+      Serial.println("Apagando sistema");
+      delay(2000);
+      // Simular apagado del sistema
+      lcd.noBacklight();
+      while (true); // Bucle infinito para simular apagado
+    }
+  } else {
+    // Tarjeta incorrecta
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Tarjeta");
+    lcd.setCursor(0, 1);
+    lcd.print("no autorizada");
+    Serial.println("Tarjeta no autorizada: " + idTarjeta);
+    delay(2000);
+  }
+  
+  mfrc522.PICC_HaltA(); // Detiene la comunicación con la tarjeta
+}
+
+bool preguntarYAccionarPuerta(const char* puerta, int pinRele, bool estadoPuerta) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Abrir ");
+  lcd.print(puerta);
+  lcd.setCursor(0, 1);
+  lcd.print("Pase su tarjeta");
+  
+  unsigned long tiempoInicio = millis();
+  while (millis() - tiempoInicio < 5000) {
+    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+      String idTarjeta = leerIdTarjeta();
+      if (idTarjeta == tarjetaGuardada) {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print(estadoPuerta ? "Cerrando " : "Abriendo ");
+        lcd.print(puerta);
+        digitalWrite(pinRele, estadoPuerta ? LOW : HIGH);
+        Serial.print(estadoPuerta ? "Cerrando " : "Abriendo ");
+        Serial.println(puerta);
+        delay(2000);
+        return true;
+      }
+    }
+    delay(50);
+  }
+  
+  return false;
+}
+
+bool preguntarYCerrarPuerta(const char* puerta, int pinRele, bool &estadoPuerta) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Cerrar ");
+  lcd.print(puerta);
+  lcd.setCursor(0, 1);
+  lcd.print("Pase su tarjeta");
+  
+  unsigned long tiempoInicio = millis();
+  while (millis() - tiempoInicio < 5000) {
+    if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+      String idTarjeta = leerIdTarjeta();
+      if (idTarjeta == tarjetaGuardada) {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Cerrando ");
+        lcd.print(puerta);
+        digitalWrite(pinRele, LOW);
+        Serial.println("Cerrando " + String(puerta));
+        delay(2000);
+        estadoPuerta = false;
+        return true;
+      }
+    }
+    delay(50);
+  }
+
+  return false;
+}
+
+String leerIdTarjeta() {
+  String idTarjeta = "";
+  for (byte i = 0; i < mfrc522.uid.size; i++) {
+    if (i > 0) idTarjeta += "-";
+    if (mfrc522.uid.uidByte[i] < 0x10) idTarjeta += "0";
+    idTarjeta += String(mfrc522.uid.uidByte[i], HEX);
+  }
+  idTarjeta.toUpperCase();
+  return idTarjeta;
+}
